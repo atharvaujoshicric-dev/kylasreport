@@ -1,19 +1,20 @@
 import streamlit as st
 import pandas as pd
+import io
 
-st.set_page_config(page_title="Real Estate Deal Dashboard", layout="wide")
+st.set_page_config(page_title="Real Estate Lead Tracker", layout="wide")
 
-st.title("📂 Deal & Notes Integrator")
-st.write("Upload your Deals, Contacts, and Notes excels to generate the unified report.")
+st.title("📊 Lead & Notes Dashboard")
+st.markdown("Upload your Excel files to generate the consolidated report with merged-style formatting.")
 
 # 1. File Uploaders
 col1, col2, col3 = st.columns(3)
 with col1:
-    deals_file = st.file_uploader("Upload Deals Excel", type=['xlsx', 'csv'])
+    deals_file = st.file_uploader("Upload Deals", type=['xlsx', 'csv'])
 with col2:
-    contacts_file = st.file_uploader("Upload Contacts Excel", type=['xlsx', 'csv'])
+    contacts_file = st.file_uploader("Upload Contacts", type=['xlsx', 'csv'])
 with col3:
-    notes_file = st.file_uploader("Upload Notes Excel", type=['xlsx', 'csv'])
+    notes_file = st.file_uploader("Upload Notes", type=['xlsx', 'csv'])
 
 def load_data(file):
     if file.name.endswith('.csv'):
@@ -26,60 +27,69 @@ if deals_file and contacts_file and notes_file:
     df_contacts = load_data(contacts_file)
     df_notes = load_data(notes_file)
 
-    # Data Cleaning (Removing whitespace from IDs)
+    # Convert IDs to string to ensure matching works
     df_deals['ID'] = df_deals['ID'].astype(str)
-    df_contacts['ID'] = df_contacts['ID'].astype(str)
+    df_contacts['Associated Entity Id'] = df_contacts['Associated Entity Id'].astype(str)
     df_notes['Associated entity id'] = df_notes['Associated entity id'].astype(str)
 
-    # 1. Prepare Contacts (Combine First + Last Name)
-    df_contacts['Name'] = df_contacts['First Name'].fillna('') + ' ' + df_contacts['Last Name'].fillna('')
-    
-    # 2. Merge Deals with Contacts 
-    # (Using 'Contacts' column in Deals or 'ID' link)
-    # Based on your file samples: Deals.ID links to Notes.Associated entity id
-    # Deals also contains CP info directly in the columns.
-    
-    # 3. Merge with Notes (Left join to keep all deals, even those without notes)
-    merged_df = pd.merge(
+    # 1. Process Contacts: Create Name and Clean Phone
+    df_contacts['Full Name'] = df_contacts['First Name'].fillna('') + ' ' + df_contacts['Last Name'].fillna('')
+    # Extract phone from "MOBILE: +91..." format
+    df_contacts['Customer Phone'] = df_contacts['Phone Numbers'].str.replace('MOBILE: ', '')
+
+    # 2. Merge Deals with Contacts (to get Customer Name and Phone)
+    merged_step1 = pd.merge(
         df_deals, 
+        df_contacts[['Associated Entity Id', 'Full Name', 'Customer Phone']], 
+        left_on='ID', 
+        right_on='Associated Entity Id', 
+        how='left'
+    )
+
+    # 3. Merge with Notes (This creates 5 rows if there are 5 notes)
+    final_merged = pd.merge(
+        merged_step1, 
         df_notes[['Associated entity id', 'Content']], 
         left_on='ID', 
         right_on='Associated entity id', 
         how='left'
     )
 
-    # 4. Final Column Selection & Renaming
-    # Column format: Name (firstname+lastname), Source, CP, CP phone number, Cp email, CP company, Unit Preference, Lead Budget, Notes
-    final_report = pd.DataFrame()
-    final_report['Name'] = merged_df['Name'] # From Deals table if present, else merge from Contacts
-    final_report['Source'] = merged_df['Source']
-    final_report['CP'] = merged_df['Channel Partner Name']
-    final_report['CP Phone Number'] = merged_df['Channel Partner Number']
-    final_report['CP Email'] = merged_df['Channel Partner Email']
-    final_report['CP Company'] = merged_df['Channel Partner Company']
-    final_report['Unit Preference'] = merged_df['Unit Preference']
-    final_report['Lead Budget'] = merged_df['Lead Budget']
-    final_report['Notes'] = merged_df['Content'].fillna("No Notes Found")
+    # 4. Construct Final Columns
+    report = pd.DataFrame()
+    report['Name'] = final_merged['Full Name']
+    report['Customer Phone'] = final_merged['Customer Phone']
+    report['Source'] = final_merged['Source']
+    report['CP'] = final_merged['Channel Partner Name']
+    report['CP Phone Number'] = final_merged['Channel Partner Number']
+    report['CP Email'] = final_merged['Channel Partner Email']
+    report['CP Company'] = final_merged['Channel Partner Company']
+    report['Unit Preference'] = final_merged['Unit Preference']
+    report['Lead Budget'] = final_merged['Lead Budget']
+    report['Notes'] = final_merged['Content'].fillna("—")
 
-    # 5. Display with Styling
-    st.subheader("Generated Report")
+    # 5. Apply "Merge & Center" visual logic
+    # We identify duplicates in the lead info columns and replace them with empty strings
+    lead_info_cols = ['Name', 'Customer Phone', 'Source', 'CP', 'CP Phone Number', 'CP Email', 'CP Company', 'Unit Preference', 'Lead Budget']
     
-    # Function to hide repeating values (Visual Merge effect)
-    def make_pretty(df):
-        # Identify columns that should not repeat
-        dup_cols = ['Name', 'Source', 'CP', 'CP Phone Number', 'CP Email', 'CP Company', 'Unit Preference', 'Lead Budget']
-        mask = df.duplicated(subset=dup_cols, keep='first')
-        df_display = df.copy()
-        df_display.loc[mask, dup_cols] = ""
-        return df_display
+    # We keep a copy for downloading (with all data) and a copy for display (with blanks)
+    display_df = report.copy()
+    mask = display_df.duplicated(subset=['Name', 'Customer Phone', 'Source'], keep='first')
+    display_df.loc[mask, lead_info_cols] = ""
 
-    styled_df = make_pretty(final_report)
-    
-    st.dataframe(styled_df, use_container_width=True, height=600)
+    # 6. UI Display
+    st.subheader("Final Report")
+    st.dataframe(display_df, use_container_width=True, height=600)
 
-    # Download Button
-    csv = final_report.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Full Report as CSV", csv, "deal_report.csv", "text/csv")
+    # 7. Download
+    towrite = io.BytesIO()
+    report.to_excel(towrite, index=False, engine='openpyxl')
+    st.download_button(
+        label="Download Full Excel Report",
+        data=towrite.getvalue(),
+        file_name="Consolidated_Lead_Report.xlsx",
+        mime="application/vnd.ms-excel"
+    )
 
 else:
-    st.info("Please upload all three files to see the report.")
+    st.info("Please upload all three Excel/CSV files to generate the dashboard.")
