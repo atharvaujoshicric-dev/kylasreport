@@ -6,7 +6,18 @@ import re
 st.set_page_config(page_title="Excel Master Dashboard", layout="wide")
 
 st.title("📂 Deal & Notes Auto-Formatter")
-st.markdown("Upload your 3 files. The downloaded Excel will have **Merged & Centered** rows with **Full Borders**.")
+st.markdown("Upload your 3 files. This version **removes broken characters** like 'Â ' from your notes.")
+
+# --- UTILITY FUNCTION TO CLEAN BROKEN CHARACTERS ---
+def clean_text(text):
+    if pd.isna(text) or not isinstance(text, str):
+        return text
+    # This replaces the 'Â' and non-breaking space characters with a standard space
+    # It also handles various common web-encoding artifacts
+    text = text.replace('\xa0', ' ').replace('Â', '')
+    # Remove multiple spaces caused by the replacement
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 # File Uploaders
 col1, col2, col3 = st.columns(3)
@@ -19,7 +30,7 @@ with col3:
 
 def load_data(file):
     if file.name.endswith('.csv'):
-        return pd.read_csv(file)
+        return pd.read_csv(file, encoding='utf-8-sig') # utf-8-sig handles many encoding issues
     return pd.read_excel(file)
 
 if deals_file and contacts_file and notes_file:
@@ -33,7 +44,7 @@ if deals_file and contacts_file and notes_file:
     df_notes['Associated entity id'] = df_notes['Associated entity id'].astype(str).str.strip()
     df_contacts['ID'] = df_contacts['ID'].astype(str).str.strip()
     
-    # Extract Contact ID from Deals string (e.g., "12345: Name")
+    # Extract Contact ID
     df_deals['Contact_Link'] = df_deals['Contacts'].str.extract('(\d+)').fillna('')
 
     # Merge Logic
@@ -57,6 +68,9 @@ if deals_file and contacts_file and notes_file:
     report['Lead Budget'] = df_merged['Lead Budget'].fillna("")
     report['Notes'] = df_merged['Content'].fillna("—")
 
+    # --- APPLY CLEANING TO NOTES ---
+    report['Notes'] = report['Notes'].apply(clean_text)
+
     # Sort to keep groups together
     report = report.sort_values(by=['Name', 'Contact Number']).reset_index(drop=True)
 
@@ -69,64 +83,43 @@ if deals_file and contacts_file and notes_file:
         worksheet = writer.sheets['Deal Report']
 
         # FORMATS
-        # 1. General format for all cells (Center/Middle Align + Borders)
         base_format = workbook.add_format({
-            'align': 'center',
-            'valign': 'vcenter',
-            'border': 1,
-            'text_wrap': True
+            'align': 'center', 'valign': 'vcenter', 'border': 1, 'text_wrap': True
         })
-
-        # 2. Header format (Bold + Colored + Center + Borders)
         header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#D7E4BC',
-            'border': 1,
-            'align': 'center',
-            'valign': 'vcenter'
+            'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center', 'valign': 'vcenter'
         })
 
         # Apply header format
         for col_num, value in enumerate(report.columns.values):
             worksheet.write(0, col_num, value, header_format)
 
-        # Apply base format (borders and alignment) to every cell in the data range
+        # Apply base format to all cells
         for r in range(1, len(report) + 1):
             for c in range(len(report.columns)):
-                # We write the existing value with the base_format to apply borders
                 worksheet.write(r, c, report.iloc[r-1, c], base_format)
 
-        # 3. VERTICAL MERGE LOGIC
-        # Identify chunks of the same Lead to merge columns A through J
+        # VERTICAL MERGE LOGIC
         unique_leads = report.groupby(['Name', 'Contact Number', 'CP'], sort=False)
-        
         current_row = 1 
         for _, group in unique_leads:
             start_row = current_row
             count = len(group)
             end_row = start_row + count - 1
-            
             if count > 1:
-                # Merge columns 0 to 9 (Name up to Lead Budget)
                 for col in range(0, 10):
                     val = group.iloc[0, col]
                     worksheet.merge_range(start_row, col, end_row, col, val, base_format)
-            
             current_row += count
 
-        # Set column widths for readability
-        worksheet.set_column('A:J', 22) # Lead Info
-        worksheet.set_column('K:K', 60) # Notes
+        worksheet.set_column('A:J', 22)
+        worksheet.set_column('K:K', 60)
 
     processed_data = output.getvalue()
-
-    st.success("✅ Excel File Ready!")
+    st.success("✅ Cleaned Excel File Ready!")
     st.download_button(
-        label="📥 Download Formatted Excel Report",
+        label="📥 Download Cleaned Excel Report",
         data=processed_data,
-        file_name="Property_Deal_Report.xlsx",
+        file_name="Cleaned_Property_Report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-else:
-    st.warning("Please upload all three files (Deals, Contacts, Notes) to generate the report.")
