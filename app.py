@@ -1,12 +1,14 @@
 import streamlit as st
 import pandas as pd
+import io
 import re
 
-st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
+st.set_page_config(page_title="Excel Auto-Merger", layout="wide")
 
-st.title("📊 Consolidated Property Dashboard")
+st.title("📑 Professional Excel Merger")
+st.write("Upload your files to generate an Excel with true **Merge & Center** formatting.")
 
-# 1. File Uploaders
+# File Uploaders
 col1, col2, col3 = st.columns(3)
 with col1:
     deals_file = st.file_uploader("Upload Deals", type=['xlsx', 'csv'])
@@ -21,76 +23,101 @@ def load_data(file):
     return pd.read_excel(file)
 
 if deals_file and contacts_file and notes_file:
+    # 1. Load and Process Data
     df_deals = load_data(deals_file)
     df_contacts = load_data(contacts_file)
     df_notes = load_data(notes_file)
 
-    # Convert IDs to strings for robust matching
-    df_deals['ID'] = df_deals['ID'].astype(str)
-    df_notes['Associated entity id'] = df_notes['Associated entity id'].astype(str)
+    # Clean IDs
+    df_deals['ID'] = df_deals['ID'].astype(str).str.strip()
+    df_notes['Associated entity id'] = df_notes['Associated entity id'].astype(str).str.strip()
+    df_contacts['ID'] = df_contacts['ID'].astype(str).str.strip()
     
-    # Extract Contact ID from Deals (Format often looks like "12345: Name")
-    def extract_id(val):
-        match = re.search(r'(\d+)', str(val))
-        return match.group(1) if match else ""
+    # Extract Contact ID from Deals string
+    df_deals['Contact_Link'] = df_deals['Contacts'].str.extract('(\d+)').fillna('')
+
+    # Merge Logic
+    df_merged = pd.merge(df_deals, df_notes[['Associated entity id', 'Content']], 
+                         left_on='ID', right_on='Associated entity id', how='left')
     
-    df_deals['Contact_Link'] = df_deals['Contacts'].apply(extract_id)
-    df_contacts['ID'] = df_contacts['ID'].astype(str)
+    df_merged = pd.merge(df_merged, df_contacts[['ID', 'Phone Numbers']], 
+                         left_on='Contact_Link', right_on='ID', how='left')
 
-    # Merge 1: Deals + Contacts (to get Phone and verify names)
-    df_merged = pd.merge(
-        df_deals, 
-        df_contacts[['ID', 'Phone Numbers']], 
-        left_on='Contact_Link', 
-        right_on='ID', 
-        how='left'
-    )
-
-    # Merge 2: Deals + Notes (This creates the multiple rows for 1 customer)
-    final_df = pd.merge(
-        df_merged, 
-        df_notes[['Associated entity id', 'Content']], 
-        left_on='ID_x', 
-        right_on='Associated entity id', 
-        how='left'
-    )
-
-    # Build the required column structure
+    # Prepare Final Table
     report = pd.DataFrame()
-    report['Name'] = final_df['Name']
-    report['Contact Number'] = final_df['Phone Numbers']
-    report['Campaigns'] = final_df['Campaigns']
-    report['Source'] = final_df['Source']
-    report['CP'] = final_df['Channel Partner Name']
-    report['CP Phone'] = final_df['Channel Partner Number']
-    report['CP Email'] = final_df['Channel Partner Email']
-    report['CP Company'] = final_df['Channel Partner Company']
-    report['Unit Preference'] = final_df['Unit Preference']
-    report['Lead Budget'] = final_df['Lead Budget']
-    report['Notes'] = final_df['Content'].fillna("—")
+    report['Name'] = df_merged['Name']
+    report['Contact Number'] = df_merged['Phone Numbers'].fillna("")
+    report['Campaigns'] = df_merged['Campaigns'].fillna("")
+    report['Source'] = df_merged['Source'].fillna("")
+    report['CP'] = df_merged['Channel Partner Name'].fillna("")
+    report['CP Phone'] = df_merged['Channel Partner Number'].fillna("")
+    report['CP Email'] = df_merged['Channel Partner Email'].fillna("")
+    report['CP Company'] = df_merged['Channel Partner Company'].fillna("")
+    report['Unit Preference'] = df_merged['Unit Preference'].fillna("")
+    report['Lead Budget'] = df_merged['Lead Budget'].fillna("")
+    report['Notes'] = df_merged['Content'].fillna("—")
 
-    # --- THE MERGE LOGIC ---
-    # We define all columns EXCEPT 'Notes' as part of the "Merge Group"
-    cols_to_fix = [
-        'Name', 'Contact Number', 'Campaigns', 'Source', 'CP', 
-        'CP Phone', 'CP Email', 'CP Company', 'Unit Preference', 'Lead Budget'
-    ]
+    # Sort by Name to ensure groups are together for merging
+    report = report.sort_values(by=['Name', 'Contact Number']).reset_index(drop=True)
 
-    # This logic identifies duplicates within each customer group
-    # It keeps the first occurrence and clears the rest to simulate a merged cell
-    mask = report.duplicated(subset=['Name', 'Contact Number', 'CP'], keep='first')
-    styled_report = report.copy()
-    styled_report.loc[mask, cols_to_fix] = ""
+    # 2. Excel Generation with Formatting
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        report.to_excel(writer, index=False, sheet_name='Report')
+        
+        workbook  = writer.book
+        worksheet = writer.sheets['Report']
 
-    # Display
-    st.subheader("Unified Lead Report")
-    
-    # Using st.table for a more "Static/Excel" look or st.dataframe for interactivity
-    st.dataframe(styled_report, use_container_width=True, height=800)
+        # Define Formats
+        merge_format = workbook.add_format({
+            'align': 'center',
+            'valign': 'vcenter',
+            'border': 1,
+            'text_wrap': True
+        })
+        
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1,
+            'align': 'center'
+        })
 
-    # Export functionality
-    csv = report.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Full CSV", csv, "report.csv", "text/csv")
+        # Apply Header Format
+        for col_num, value in enumerate(report.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+
+        # 3. MERGE LOGIC
+        # We iterate through the dataframe to find chunks of the same person
+        unique_leads = report.groupby(['Name', 'Contact Number', 'CP'], sort=False)
+        
+        current_row = 1 # Start after header
+        for _, group in unique_leads:
+            start_row = current_row
+            end_row = start_row + len(group) - 1
+            
+            # If there's more than one row for this lead, merge the detail columns
+            if end_row > start_row:
+                # Merge columns 0 to 9 (Name through Lead Budget)
+                for col in range(0, 10):
+                    val = group.iloc[0, col]
+                    worksheet.merge_range(start_row, col, end_row, col, val, merge_format)
+            
+            current_row += len(group)
+
+        # Auto-adjust column widths
+        worksheet.set_column('A:K', 20)
+        worksheet.set_column('K:K', 50) # Make Notes column wider
+
+    processed_data = output.getvalue()
+
+    st.success("✅ Report generated successfully!")
+    st.download_button(
+        label="📥 Download Merged Excel Report",
+        data=processed_data,
+        file_name="Property_Deal_Report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 else:
-    st.info("Please upload all three Excel/CSV files to generate the dashboard.")
+    st.info("Upload the 3 files to start.")
