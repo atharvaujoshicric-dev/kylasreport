@@ -6,7 +6,7 @@ import re
 st.set_page_config(page_title="Excel Master Dashboard", layout="wide")
 
 st.title("📂 Professional Deal Report Generator")
-st.markdown("Upload your files to get a **Merged & Centered** Excel with cleaned phone numbers and notes.")
+st.markdown("Upload your files to get a **Merged & Centered** Excel with Serial Numbers and cleaned data.")
 
 # --- CLEANING FUNCTIONS ---
 def clean_notes(text):
@@ -14,16 +14,15 @@ def clean_notes(text):
         return text
     # Removes broken encoding characters like Â and non-breaking spaces
     text = text.replace('\xa0', ' ').replace('Â', '')
-    text = re.sub(r'\s+', ' ', text) # Remove extra spaces
+    text = re.sub(r'\s+', ' ', text) 
     return text.strip()
 
 def clean_phone(val):
     if pd.isna(val) or val == "":
         return ""
     val = str(val)
-    # Removes "MOBILE:", "+91", and any spaces or dashes
     cleaned = val.replace("MOBILE:", "").replace("+91", "")
-    cleaned = re.sub(r'[^0-9]', '', cleaned) # Keep only digits
+    cleaned = re.sub(r'[^0-9]', '', cleaned) 
     return cleaned
 
 # --- FILE UPLOADERS ---
@@ -51,7 +50,7 @@ if deals_file and contacts_file and notes_file:
     df_notes['Associated entity id'] = df_notes['Associated entity id'].astype(str).str.strip()
     df_contacts['ID'] = df_contacts['ID'].astype(str).str.strip()
     
-    # Extract Contact ID from Deals string
+    # Extract Contact ID
     df_deals['Contact_Link'] = df_deals['Contacts'].str.extract('(\d+)').fillna('')
 
     # 2. Merge Data
@@ -81,7 +80,7 @@ if deals_file and contacts_file and notes_file:
     # 4. Generate Formatted Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        report.to_excel(writer, index=False, sheet_name='Report')
+        report.to_excel(writer, index=False, sheet_name='Report', startcol=1) # Start at col B
         
         workbook  = writer.book
         worksheet = writer.sheets['Report']
@@ -94,35 +93,45 @@ if deals_file and contacts_file and notes_file:
             'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center', 'valign': 'vcenter'
         })
 
-        # Format Headers
-        for col_num, value in enumerate(report.columns.values):
-            worksheet.write(0, col_num, value, header_format)
+        # Add "Sr. No." Header
+        worksheet.write(0, 0, "Sr. No.", header_format)
 
-        # Apply basic formatting (borders/alignment) to all cells
+        # Apply basic formatting (borders/alignment) to all data cells
         for r in range(1, len(report) + 1):
+            worksheet.write(r, 0, "", base_format) # Empty Sr No cells for now
             for c in range(len(report.columns)):
-                worksheet.write(r, c, report.iloc[r-1, c], base_format)
+                worksheet.write(r, c + 1, report.iloc[r-1, c], base_format)
 
-        # Apply Merge and Center logic
+        # 5. MERGE LOGIC WITH SERIAL NUMBER
         unique_leads = report.groupby(['Name', 'Contact Number', 'CP'], sort=False)
+        
         current_row = 1 
+        sr_no = 1
         for _, group in unique_leads:
             start_row = current_row
             end_row = start_row + len(group) - 1
+            
+            # Merge Sr. No. Column
             if len(group) > 1:
-                for col in range(0, 10): # Merge Name through Lead Budget
-                    val = group.iloc[0, col]
+                worksheet.merge_range(start_row, 0, end_row, 0, sr_no, base_format)
+                for col in range(1, 11): # Merge Name (Col 1) through Lead Budget (Col 10)
+                    val = group.iloc[0, col-1]
                     worksheet.merge_range(start_row, col, end_row, col, val, base_format)
+            else:
+                worksheet.write(start_row, 0, sr_no, base_format)
+            
+            sr_no += 1
             current_row += len(group)
 
         # Column widths
-        worksheet.set_column('A:J', 20)
-        worksheet.set_column('K:K', 60)
+        worksheet.set_column('A:A', 8)  # Sr. No.
+        worksheet.set_column('B:K', 20) # Data columns
+        worksheet.set_column('L:L', 60) # Notes
 
-    st.success("✅ Cleaned & Formatted Excel is ready!")
+    st.success("✅ Excel with Sr. No. and Cleaned Data is ready!")
     st.download_button(
         label="📥 Download Final Excel Report",
         data=output.getvalue(),
-        file_name="Cleaned_Lead_Report.xlsx",
+        file_name="Final_Deal_Report_with_SrNo.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
